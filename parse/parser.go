@@ -39,11 +39,6 @@ func main() {
 		panic(err)
 	}
 
-	var result map[string]interface{}
-	if *jsonOutput {
-		result = make(map[string]interface{}, 2)
-	}
-
 	strictness := validator.Strict(*strict)
 
 	parseOpts := make([]parser.Option, 0)
@@ -59,6 +54,7 @@ func main() {
 
 	expr, err := parser.CreateParser(parseOpts...).Parse(args[0], string(content), false)
 	if *jsonOutput {
+		result := make(map[string]interface{}, 2)
 		if err != nil {
 			if i, ok := err.(issue.Reported); ok {
 				result[`issues`] = []interface{}{pn.ReportedToPN(i).ToData()}

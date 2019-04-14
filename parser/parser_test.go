@@ -778,18 +778,20 @@ func TestWorkflowDefinition(t *testing.T) {
       workflow foo {} {
         resource bar {
           type => Genesis::Aws::Instance,
-        } each($y) |$x| {
+					repeat => {
+						each => $y,
+						as => $x
+					}
+        } {
           x => $x,
         }
       }`),
 		`(activity {:name "foo" :style "workflow" :definition (block `+
 			`(activity {:name "foo::bar" :style "resource" :properties (hash `+
 			`(=> (qn "type") (qr "Genesis::Aws::Instance")) `+
-			`(=> (qn "iteration") (hash `+
-			`(=> (qn "name") (qn "bar")) `+
-			`(=> (qn "function") (qn "each")) `+
-			`(=> (qn "params") (array (param {:name "y"}))) `+
-			`(=> (qn "vars") (array (param {:name "x"})))))) `+
+			`(=> (qn "repeat") (hash `+
+			`(=> (qn "each") (call-method {:functor (. (qr "Deferred") (qn "new")) :args ["$y"]})) `+
+			`(=> (qn "as") (array (param {:name "x"})))))) `+
 			`:definition (hash (=> (qn "x") (call-method {:functor (. (qr "Deferred") (qn "new")) :args ["$x"]})))}))})`,
 		WorkflowEnabled)
 

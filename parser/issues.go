@@ -33,7 +33,7 @@ const (
 	parseExpectedActivityStyle        = `PARSE_EXPECTED_ACTIVITY_STYLE`
 	parseExpectedAttributeName        = `PARSE_EXPECTED_ATTRIBUTE_NAME`
 	parseExpectedActivityOperation    = `PARSE_EXPECTED_ACTIVITY_OPERATION`
-	parseExpectedIteratorStyle        = `PARSE_EXPECTED_ITERATOR_STYLE`
+	parseExpectedRepeatProperty       = `PARSE_EXPECTED_ITERATOR_STYLE`
 	parseExpectedClassName            = `PARSE_EXPECTED_CLASS_NAME`
 	parseExpectedFarrowAfterKey       = `PARSE_EXPECTED_FARROW_AFTER_KEY`
 	parseExpectedNameOrNumberAfterDot = `PARSE_EXPECTED_NAME_OR_NUMBER_AFTER_DOT`
@@ -84,7 +84,7 @@ func init() {
 	issue.Hard(parseElsifInUnless, `elsif not supported in unless expression`)
 	issue.Hard(parseExpectedActivityName, `expected %{activity} name`)
 	issue.Hard(parseExpectedActivityOperation, `expected one of 'delete', 'read', or 'upsert'. Got '%{operation}'`)
-	issue.Hard(parseExpectedIteratorStyle, `expected one of 'each', 'range', or 'times'. Got '%{style}`)
+	issue.Hard(parseExpectedRepeatProperty, `expected one of 'each', 'each_pair', 'range', 'times', or 'as'. Got '%{key}`)
 	issue.Hard(parseExpectedActivityStyle, `expected one of 'action', 'resource', or 'workflow'`)
 	issue.Hard(parseExpectedAttributeName, `expected attribute name`)
 	issue.Hard(parseExpectedClassName, `expected name of class`)

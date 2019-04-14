@@ -391,7 +391,7 @@ func (ctx *context) argument() (expr Expression) {
 	return
 }
 
-func (ctx *context) hashEntry() (expr Expression) {
+func (ctx *context) hashValue() (expr Expression) {
 	return ctx.handleKeyword(ctx.relationship)
 }
 
@@ -636,12 +636,12 @@ func (ctx *context) arrayExpression() (elements []Expression) {
 }
 
 func (ctx *context) keyedEntry() Expression {
-	key := ctx.hashEntry()
+	key := ctx.hashValue()
 	if ctx.currentToken != tokenFarrow {
 		panic(ctx.parseIssue(parseExpectedFarrowAfterKey))
 	}
 	ctx.nextToken()
-	value := ctx.hashEntry()
+	value := ctx.hashValue()
 	return ctx.factory.KeyedEntry(key, value, ctx.locator, key.ByteOffset(), ctx.Pos()-key.ByteOffset())
 }
 
@@ -1296,8 +1296,6 @@ func (ctx *context) activityName(activity ActivityStyle) string {
 	panic(ctx.parseIssue2(parseExpectedActivityName, issue.H{`activity`: activity}))
 }
 
-// activityEntry is a hash entry with some specific constraints
-
 func (ctx *context) activityProperty() Expression {
 	start := ctx.Pos()
 	key, ok := ctx.identifierExpr()
@@ -1315,18 +1313,50 @@ func (ctx *context) activityProperty() Expression {
 	switch name {
 	case `input`:
 		// TODO: Allow non condensed declaration using array of hashes where everything is
-		// spelled out (type and value expressed in hash)
+		//   spelled out (type and value expressed in hash)
 		value = ctx.factory.Array(ctx.parameterList(), ctx.locator, vstart, ctx.Pos()-vstart)
 		ctx.nextToken()
 	case `output`:
 		// TODO: Allow non condensed declaration using array of hashes where everything is
-		// spelled out (type and value expressed in hash)
+		//   spelled out (type and value expressed in hash)
 		params := ctx.outputParameters()
 		value = ctx.factory.Array(params, ctx.locator, vstart, ctx.Pos()-vstart)
 		ctx.nextToken()
-
+	case `repeat`:
+		ctx.assertToken(tokenLc)
+		ctx.nextToken()
+		entries := ctx.expressions(tokenRc, ctx.repeatProperty)
+		value = ctx.factory.Hash(entries, ctx.locator, vstart, ctx.Pos()-vstart)
 	default:
-		value = ctx.hashEntry()
+		value = ctx.expression()
+	}
+	return ctx.factory.KeyedEntry(key, value, ctx.locator, start, ctx.Pos()-start)
+}
+
+func (ctx *context) repeatProperty() Expression {
+	start := ctx.Pos()
+	key, ok := ctx.identifierExpr()
+	if !ok {
+		panic(ctx.parseIssue(parseExpectedAttributeName))
+	}
+	if ctx.currentToken != tokenFarrow {
+		panic(ctx.parseIssue(parseExpectedFarrowAfterKey))
+	}
+	ctx.nextToken()
+
+	vstart := ctx.Pos()
+	name := key.(*QualifiedName).name
+	var value Expression
+	switch name {
+	case `each`, `eachPair`, `times`, `range`:
+		value = convertToDeferred(ctx.factory, ctx.hashValue())
+	case `as`:
+		// TODO: Allow non condensed declaration using array of hashes where everything is
+		//   spelled out (type and value expressed in hash)
+		value = ctx.factory.Array(ctx.repeatParameters(), ctx.locator, vstart, ctx.Pos()-vstart)
+		ctx.nextToken()
+	default:
+		panic(ctx.parseIssue2(parseExpectedRepeatProperty, issue.H{`key`: name}))
 	}
 	return ctx.factory.KeyedEntry(key, value, ctx.locator, start, ctx.Pos()-start)
 }
@@ -1435,55 +1465,9 @@ func (ctx *context) activityDeclaration(start int, style ActivityStyle, name str
 
 	f := ctx.factory
 	l := ctx.locator
-
-	iterName := name
-	if ctx.currentToken == tokenVariable {
-		iterName = ctx.tokenString()
-		ctx.nextToken()
-		ctx.assertToken(tokenAssign)
-		ctx.nextToken()
-		ctx.assertToken(tokenIdentifier)
-	}
-
-	if ctx.currentToken == tokenIdentifier {
-		switch ctx.tokenString() {
-		case `times`, `range`, `each`:
-			iterFunc := ctx.tokenString()
-			nl := len(iterFunc)
-			fs := ctx.tokenStartPos
-			ps := ctx.Pos()
-			ctx.nextToken()
-			iterParams := ctx.parameterList()
-			ctx.nextToken()
-			vs := ctx.Pos()
-			pl := ps - vs
-			iterVars := ctx.lambdaParameterList()
-			ctx.nextToken()
-			vl := ctx.Pos() - vs
-			fn := ctx.Pos() - fs
-			iter := f.Hash(
-				[]Expression{
-					f.KeyedEntry(
-						f.QualifiedName(`name`, l, fs, 0),
-						f.QualifiedName(iterName, l, fs, nl), l, fs, nl),
-					f.KeyedEntry(
-						f.QualifiedName(`function`, l, fs, 0),
-						f.QualifiedName(iterFunc, l, fs, nl), l, fs, nl),
-					f.KeyedEntry(
-						f.QualifiedName(`params`, l, ps, 0),
-						f.Array(iterParams, l, ps, pl), l, ps, pl),
-					f.KeyedEntry(
-						f.QualifiedName(`vars`, l, vs, 0),
-						f.Array(iterVars, l, vs, vl), l, vs, vl),
-				}, l, fs, fn)
-			propEntries = append(propEntries, f.KeyedEntry(f.QualifiedName(`iteration`, l, fs, 0), iter, l, fs, fn))
-		default:
-			panic(ctx.parseIssue2(parseExpectedIteratorStyle, issue.H{`style`: ctx.tokenString()}))
-		}
-	}
 	var properties Expression
 	if len(propEntries) > 0 {
-		properties = f.Hash(propEntries, l, hstart, hEnd-hstart)
+		properties = ctx.factory.Hash(propEntries, l, hstart, hEnd-hstart)
 	}
 
 	var block Expression
@@ -1840,6 +1824,38 @@ func (ctx *context) outputParameter() Expression {
 	return ctx.factory.Parameter(
 		variable,
 		defaultExpression, typeExpr, false, ctx.locator, start, ctx.Pos()-start)
+}
+
+func (ctx *context) repeatParameters() (result []Expression) {
+	switch ctx.currentToken {
+	case tokenLp, tokenWslp:
+		ctx.nextToken()
+		return ctx.expressions(tokenRp, ctx.repeatParameter)
+	case tokenVariable:
+		return []Expression{ctx.repeatParameter()}
+	default:
+		return []Expression{}
+	}
+}
+
+func (ctx *context) repeatParameter() Expression {
+	var typeExpr Expression
+
+	start := ctx.tokenStartPos
+	if ctx.currentToken == tokenTypeName {
+		typeExpr = ctx.parameterType()
+	}
+	if ctx.currentToken != tokenVariable {
+		panic(ctx.parseIssue(parseExpectedVariable))
+	}
+	variable, ok := ctx.tokenValue.(string)
+	if !ok {
+		panic(ctx.parseIssue(parseExpectedVariable))
+	}
+	ctx.nextToken()
+	return ctx.factory.Parameter(
+		variable,
+		nil, typeExpr, false, ctx.locator, start, ctx.Pos()-start)
 }
 
 func (ctx *context) parameterType() Expression {
