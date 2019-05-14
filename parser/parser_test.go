@@ -748,25 +748,28 @@ func TestWorkflowDefinition(t *testing.T) {
 
 	expectDump(t,
 		issue.Unindent(`
-      workflow foo {} {
-        resource bar {}
-      }`),
+			foo => workflow {
+				activities => {
+	        bar => resource {}
+  	    }
+			}`),
 		`(activity {:name "foo" :style "workflow" :definition (block `+
 			`(activity {:name "foo::bar" :style "resource"}))})`,
 		WorkflowEnabled)
 
 	expectDump(t,
 		issue.Unindent(`
-      workflow foo {} {
-        resource bar {
-          type => Genesis::Aws::Instance
-        } {
-          x => 2,
-          y => {
-            a => 'a'
-          }
-        }
-      }`),
+      foo => workflow {
+				activities => {
+      	  bar => resource {
+        	  type => Genesis::Aws::Instance
+          	state => {
+		          x => 2,
+  		        y => {
+    		        a => 'a'
+      	    	}
+        		}
+      		}`),
 		`(activity {:name "foo" :style "workflow" :definition (block `+
 			`(activity {:name "foo::bar" :style "resource" :properties (hash (=> (qn "type") (qr "Genesis::Aws::Instance"))) :definition (hash `+
 			`(=> (qn "x") 2) `+
@@ -775,17 +778,20 @@ func TestWorkflowDefinition(t *testing.T) {
 
 	expectDump(t,
 		issue.Unindent(`
-      workflow foo {} {
-        resource bar {
-          type => Genesis::Aws::Instance,
-					repeat => {
-						each => $y,
-						as => $x
+      foo => workflow {
+				activities {
+					bar => resource {
+						type => Genesis::Aws::Instance,
+						repeat => {
+							each => $y,
+							as => $x
+						}
+						state => {
+							x => $x,
+						}
 					}
-        } {
-          x => $x,
-        }
-      }`),
+				}
+			}`),
 		`(activity {:name "foo" :style "workflow" :definition (block `+
 			`(activity {:name "foo::bar" :style "resource" :properties (hash `+
 			`(=> (qn "type") (qr "Genesis::Aws::Instance")) `+
@@ -797,13 +803,16 @@ func TestWorkflowDefinition(t *testing.T) {
 
 	expectDump(t,
 		issue.Unindent(`
-      workflow foo {} {
-        action bar { guard => true } {
-          function read {
-            true
-          }
-        }
-      }`),
+      workflow foo {
+				activities => {
+					bar => action {
+						when => true,
+						function read {
+							true
+						}
+					}
+				}
+			}`),
 		`(activity {:name "foo" :style "workflow" :definition (block `+
 			`(activity {:name "foo::bar" :style "action" :properties (hash (=> (qn "guard") true)) `+
 			`:definition (block (function {:name "read" :body [true]}))}))})`,
@@ -811,18 +820,20 @@ func TestWorkflowDefinition(t *testing.T) {
 
 	expectDump(t,
 		issue.Unindent(`
-      workflow foo {} {
-        action bar {} {
-          function delete {
-            notice('hello from delete')
-          }
-          function read {
-            notice('hello from read')
-          }
-          function upsert {
-            notice('hello from upsert')
-          }
-        }
+      workflow foo {
+				activities => {
+					bar => stateHandler {
+						delete => () {
+							notice('hello from delete')
+						},
+						read => () {
+							notice('hello from read')
+						},
+						upsert => () {
+							notice('hello from upsert')
+						}
+					}
+				}
       }`),
 		`(activity {:name "foo" :style "workflow" :definition (block `+
 			`(activity {:name "foo::bar" :style "action" :definition (block `+

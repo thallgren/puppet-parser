@@ -47,13 +47,6 @@ var statementCalls = map[string]bool{
 	`return`: true,
 }
 
-var workflowStyles = map[string]ActivityStyle{
-	`action`:       ActivityStyleAction,
-	`resource`:     ActivityStyleResource,
-	`stateHandler`: ActivityStyleStateHandler,
-	`workflow`:     ActivityStyleWorkflow,
-}
-
 type Lexer interface {
 	CurrentToken() int
 
@@ -149,6 +142,12 @@ func CreateParser(parserOptions ...Option) ExpressionParser {
 			ctx.tasks = true
 		case WorkflowEnabled:
 			ctx.workflow = true
+			ctx.workflowStyles = map[string]func() Expression{
+				`action`:       ctx.functionDefinition,
+				`resource`:     ctx.resourceActivity,
+				`stateHandler`: ctx.stateHandlerActivity,
+				`workflow`:     ctx.workflowActivity,
+			}
 		}
 	}
 	return ctx
@@ -424,7 +423,7 @@ func (ctx *context) relationship() (expr Expression) {
 }
 
 func (ctx *context) assignment() (expr Expression) {
-	expr = ctx.activity()
+	expr = ctx.resource()
 	for {
 		switch ctx.currentToken {
 		case tokenAssign, tokenAddAssign, tokenSubtractAssign:
@@ -437,28 +436,74 @@ func (ctx *context) assignment() (expr Expression) {
 	}
 }
 
-func (ctx *context) activity() (expr Expression) {
+func (ctx *context) resource() (expr Expression) {
 	start := ctx.Pos()
-	expr = ctx.resource()
+	expr = ctx.expression()
 	if ctx.workflow {
 		if qn, ok := expr.(*QualifiedName); ok {
-			s := qn.Name()
-			if style, ok := workflowStyles[s]; ok {
-				if name, ok := ctx.identifier(); ok {
-					expr = ctx.activityDeclaration(start, style, name, true)
-				}
+			if style, ok := ctx.workflowStyles[qn.Name()]; ok {
+				return style()
 			}
 		}
 	}
-	return
-}
-
-func (ctx *context) resource() (expr Expression) {
-	expr = ctx.expression()
 	if ctx.currentToken == tokenLc {
 		expr = ctx.resourceExpression(expr.ByteOffset(), expr, REGULAR)
 	}
 	return
+}
+
+func (ctx *context) resourceActivity() Expression {
+	start := ctx.tokenStartPos
+	ctx.nextToken()
+
+	input := []Expression{}
+	output := []Expression{}
+
+	// Input is always inferred from the variable references found in the resource body
+	if ctx.currentToken == tokenRshift {
+		// Resource output is special
+		ctx.nextToken()
+		output = ctx.resourceOutputParameters()
+	}
+	ctx.assertToken(tokenLc)
+
+	return nil
+}
+
+func (ctx *context) stateHandlerActivity() Expression {
+	start := ctx.tokenStartPos
+	ctx.nextToken()
+	return nil
+}
+
+func (ctx *context) workflowActivity() Expression {
+	start := ctx.tokenStartPos
+	ctx.nextToken()
+	return nil
+}
+
+func (ctx *context) activity(style ActivityStyle, start int) (expr Expression) {
+	input := []Expression{}
+	output := []Expression{}
+	switch style {
+	case ActivityStyleAction, ActivityStyleWorkflow:
+		// Input/Output described by parameter list and possibly typed and aliased
+		// outputParameters
+		if ctx.currentToken == tokenRp {
+			input = ctx.parameterList()
+			ctx.nextToken()
+		}
+		if ctx.currentToken == tokenRshift {
+			ctx.nextToken()
+			output = ctx.outputParameters()
+		}
+	case ActivityStyleResource:
+
+	}
+	if ctx.currentToken == tokenLc {
+		return ctx.factory.Activity(style, ctx.hashExpression(), ctx.locator, start, ctx.Pos()-start)
+	}
+
 }
 
 func (ctx *context) expression() (expr Expression) {
@@ -1269,31 +1314,13 @@ func (ctx *context) callFunctionExpression(functorExpr Expression) Expression {
 	}
 	var block Expression
 	if ctx.currentToken == tokenPipe {
-		block = ctx.lambda()
+		block = ctx.lambda(ctx.tokenStartPos)
 		end = block.ByteOffset() + block.ByteLength()
 	}
 	if namedAccess, ok := functorExpr.(*NamedAccessExpression); ok {
 		return ctx.convertLhsToCall(namedAccess, args, block, start, end-start)
 	}
 	return ctx.factory.CallNamed(functorExpr, true, args, block, ctx.locator, start, end-start)
-}
-
-func (ctx *context) activityStyle() ActivityStyle {
-	switch ctx.currentToken {
-	case tokenIdentifier:
-		if style, ok := workflowStyles[ctx.tokenString()]; ok {
-			ctx.nextToken()
-			return style
-		}
-	}
-	panic(ctx.parseIssue(parseExpectedActivityStyle))
-}
-
-func (ctx *context) activityName(activity ActivityStyle) string {
-	if tn, ok := ctx.identifier(); ok {
-		return tn
-	}
-	panic(ctx.parseIssue2(parseExpectedActivityName, issue.H{`activity`: activity}))
 }
 
 func (ctx *context) activityProperty() Expression {
@@ -1432,82 +1459,6 @@ func (ctx *context) stateAttribute() (op Expression) {
 	}
 }
 
-func (ctx *context) activityExpression() Expression {
-	start := ctx.Pos()
-	if ctx.currentToken == tokenFunction {
-		return ctx.functionDefinition()
-	}
-	style := ctx.activityStyle()
-	name := ctx.activityName(style)
-	return ctx.activityDeclaration(start, style, name, false)
-}
-
-func (ctx *context) activities() []Expression {
-	activities := make([]Expression, 0)
-	for ctx.currentToken != tokenRc {
-		activities = append(activities, ctx.activityExpression())
-	}
-	ctx.nextToken()
-	return activities
-}
-
-func (ctx *context) activityDeclaration(start int, style ActivityStyle, name string, atTop bool) Expression {
-	if style == ActivityStyleWorkflow {
-		// Push to name stack
-		ctx.nameStack = append(ctx.nameStack, name)
-	}
-	hstart := ctx.tokenStartPos
-	ctx.assertToken(tokenLc)
-	ctx.nextToken()
-	propEntries := ctx.expressions(tokenRc, ctx.activityProperty)
-	hEnd := ctx.Pos()
-	ctx.nextToken()
-
-	f := ctx.factory
-	l := ctx.locator
-	var properties Expression
-	if len(propEntries) > 0 {
-		properties = ctx.factory.Hash(propEntries, l, hstart, hEnd-hstart)
-	}
-
-	var block Expression
-
-	switch style {
-	case ActivityStyleWorkflow:
-		if ctx.currentToken == tokenLc {
-			hstart := ctx.tokenStartPos
-			ctx.nextToken()
-			activities := ctx.activities()
-			if len(activities) > 0 {
-				block = ctx.factory.Block(activities, ctx.locator, hstart, ctx.Pos()-hstart)
-			}
-		}
-
-		// Pop name stack
-		ctx.nameStack = ctx.nameStack[:len(ctx.nameStack)-1]
-	case ActivityStyleResource:
-		if ctx.currentToken == tokenLc {
-			hstart := ctx.tokenStartPos
-			ctx.nextToken()
-			entries := ctx.stateHash(hstart)
-			if len(entries) > 0 {
-				block = ctx.factory.Hash(entries, ctx.locator, start, ctx.Pos()-start).(*LiteralHash)
-			}
-			ctx.nextToken()
-		}
-	default: // ActivityStyleAction or ActivityStyleStateHandler
-		ctx.assertToken(tokenLc)
-		ctx.nextToken()
-		block = ctx.parse(tokenRc, false)
-		ctx.nextToken()
-	}
-	activity := f.Activity(ctx.qualifiedName(name), style, properties, block, l, start, ctx.Pos()-start)
-	if atTop {
-		ctx.addDefinition(activity)
-	}
-	return activity
-}
-
 func (ctx *context) lambda() (result Expression) {
 	start := ctx.tokenStartPos
 	parameterList := ctx.lambdaParameterList()
@@ -1574,19 +1525,15 @@ func (ctx *context) arguments() (result []Expression) {
 	return ctx.joinHashEntries(ctx.expressions(tokenRp, ctx.argument))
 }
 
-func (ctx *context) functionDefinition() Expression {
+func (ctx *context) functionDefinition() (expr Expression) {
 	start := ctx.tokenStartPos
 	ctx.nextToken()
-	var name string
+	name := ``
 	switch ctx.currentToken {
 	case tokenIdentifier, tokenTypeName:
 		name = ctx.tokenString()
-	default:
-		ctx.SetPos(ctx.tokenStartPos)
-		panic(ctx.parseIssue(parseExpectedNameAfterFunction))
+		ctx.nextToken()
 	}
-
-	ctx.nextToken()
 
 	var parameterList []Expression
 	switch ctx.currentToken {
@@ -1607,7 +1554,13 @@ func (ctx *context) functionDefinition() Expression {
 	ctx.nextToken()
 	block := ctx.parse(tokenRc, false)
 	ctx.nextToken() // consume TOKEN_RC
-	return ctx.addDefinition(ctx.factory.Function(name, parameterList, block, returnType, ctx.locator, start, ctx.Pos()-start))
+	length := ctx.Pos() - start
+	if name == `` {
+		expr = ctx.factory.Lambda(parameterList, block, returnType, ctx.locator, start, length)
+	} else {
+		expr = ctx.addDefinition(ctx.factory.Function(name, parameterList, block, returnType, ctx.locator, start, length))
+	}
+	return
 }
 
 func (ctx *context) planDefinition() Expression {
@@ -1774,14 +1727,18 @@ func (ctx *context) parameter() Expression {
 		defaultExpression, typeExpr, capturesRest, ctx.locator, start, ctx.Pos()-start)
 }
 
-func (ctx *context) outputParameters() (result []Expression) {
+func (ctx *context) resourceOutputParameters() (result []Expression) {
 	switch ctx.currentToken {
 	case tokenLp, tokenWslp:
 		ctx.nextToken()
-		return ctx.expressions(tokenRp, ctx.outputParameter)
+		result = ctx.expressions(tokenRp, ctx.resourceOutputParameter)
 	default:
-		return []Expression{}
+		start := ctx.tokenStartPos
+		result = []Expression{
+			ctx.factory.Parameter(ctx.attributeName(), nil, nil, false, ctx.locator, start, ctx.Pos()-start)}
 	}
+	ctx.nextToken()
+	return
 }
 
 func (ctx *context) attributeAlias() Expression {
@@ -1792,21 +1749,11 @@ func (ctx *context) attributeAlias() Expression {
 	panic(ctx.parseIssue(parseExpectedAttributeName))
 }
 
-func (ctx *context) outputParameter() Expression {
-	var typeExpr, defaultExpression Expression
+func (ctx *context) resourceOutputParameter() Expression {
+	var attrAlias Expression
 
 	start := ctx.tokenStartPos
-
-	if ctx.currentToken == tokenTypeName {
-		typeExpr = ctx.parameterType()
-	}
-	if ctx.currentToken != tokenVariable {
-		panic(ctx.parseIssue(parseExpectedVariable))
-	}
-	variable, ok := ctx.tokenValue.(string)
-	if !ok {
-		panic(ctx.parseIssue(parseExpectedVariable))
-	}
+	attrName := ctx.attributeName()
 	ctx.nextToken()
 
 	if ctx.currentToken == tokenAssign {
@@ -1815,15 +1762,14 @@ func (ctx *context) outputParameter() Expression {
 		case tokenLp, tokenWslp:
 			ps := ctx.tokenStartPos
 			ctx.nextToken()
-			defaultExpression = ctx.factory.Array(ctx.expressions(tokenRp, ctx.attributeAlias), ctx.locator, ps, ps-ctx.Pos())
+			attrAlias = ctx.factory.Array(ctx.expressions(tokenRp, ctx.attributeAlias), ctx.locator, ps, ps-ctx.Pos())
 			ctx.nextToken()
 		default:
-			defaultExpression = ctx.attributeAlias()
+			attrAlias = ctx.attributeAlias()
 		}
 	}
 	return ctx.factory.Parameter(
-		variable,
-		defaultExpression, typeExpr, false, ctx.locator, start, ctx.Pos()-start)
+		attrName, attrAlias, nil, false, ctx.locator, start, ctx.Pos()-start)
 }
 
 func (ctx *context) repeatParameters() (result []Expression) {

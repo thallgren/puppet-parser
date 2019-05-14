@@ -322,6 +322,7 @@ type context struct {
 	factory               ExpressionFactory
 	nameStack             []string
 	definitions           []Definition
+	workflowStyles        map[string]func() Expression
 }
 
 func (ctx *context) setToken(token int) {
